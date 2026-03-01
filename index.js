@@ -25,12 +25,17 @@ let discordChannel = null;
 
 discord.once('ready', async () => {
   console.log(`Discord bot ready: ${discord.user.tag}`);
+  console.log(`Target channel ID: ${DISCORD_CHANNEL_ID}`);
+  console.log(`Guilds: ${discord.guilds.cache.map(g => `${g.name}(${g.id})`).join(', ')}`);
   try {
     discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
     console.log(`Connected to channel: ${discordChannel.name}`);
   } catch (e) {
     console.error(`Failed to fetch channel ${DISCORD_CHANNEL_ID}: ${e.message}`);
-    console.error('Make sure the bot has View Channel permissions in IAMBOTS.');
+    // List all visible channels
+    discord.guilds.cache.forEach(g => {
+      console.log(`Channels in ${g.name}: ${g.channels.cache.map(c => `${c.name}(${c.id})`).join(', ')}`);
+    });
   }
 });
 
