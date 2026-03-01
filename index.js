@@ -25,7 +25,13 @@ let discordChannel = null;
 
 discord.once('ready', async () => {
   console.log(`Discord bot ready: ${discord.user.tag}`);
-  discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
+  try {
+    discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
+    console.log(`Connected to channel: ${discordChannel.name}`);
+  } catch (e) {
+    console.error(`Failed to fetch channel ${DISCORD_CHANNEL_ID}: ${e.message}`);
+    console.error('Make sure the bot has View Channel permissions in IAMBOTS.');
+  }
 });
 
 // Discord -> SMS
