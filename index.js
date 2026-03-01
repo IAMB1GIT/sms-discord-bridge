@@ -10,8 +10,10 @@ app.use(express.json());
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TWILIO_NUMBER = process.env.TWILIO_NUMBER;
+const DISCORD_BOT_ID = process.env.DISCORD_BOT_ID || '1477458117921996901';
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-// Discord client
+// Discord client — monitors channel for bot replies to forward to SMS
 const discord = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -21,37 +23,33 @@ const discord = new Client({
   partials: [Partials.Channel],
 });
 
-let discordChannel = null;
-
 discord.once('ready', async () => {
-  console.log(`Discord bot ready: ${discord.user.tag}`);
-  console.log(`Target channel ID: ${DISCORD_CHANNEL_ID}`);
-  console.log(`Guilds: ${discord.guilds.cache.map(g => `${g.name}(${g.id})`).join(', ')}`);
-  try {
-    discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
-    console.log(`Connected to channel: ${discordChannel.name}`);
-  } catch (e) {
-    console.error(`Failed to fetch channel ${DISCORD_CHANNEL_ID}: ${e.message}`);
-    // List all visible channels
-    discord.guilds.cache.forEach(g => {
-      console.log(`Channels in ${g.name}: ${g.channels.cache.map(c => `${c.name}(${c.id})`).join(', ')}`);
-    });
-  }
+  console.log(`Discord bridge ready: ${discord.user.tag}`);
+  console.log(`Monitoring channel: ${DISCORD_CHANNEL_ID}`);
+  console.log(`Forwarding replies from bot: ${DISCORD_BOT_ID}`);
 });
 
-// Discord -> SMS
+// Track SMS senders so we know who to reply to
+let lastSender = null;
+
+// Discord -> SMS: forward bot (IAMB1/OpenClaw) replies back to SMS
 discord.on('messageCreate', async (msg) => {
   if (msg.channelId !== DISCORD_CHANNEL_ID) return;
-  if (msg.author.bot) return;
 
-  // We need a target number — store last inbound SMS number
+  // Only forward messages from the AI bot
+  if (msg.author.id !== DISCORD_BOT_ID) return;
+
+  // Skip our own webhook posts
+  if (msg.webhookId) return;
+
   const toNumber = lastSender;
   if (!toNumber) {
-    console.log('No SMS sender to reply to yet.');
+    console.log('Bot replied but no SMS sender to forward to.');
     return;
   }
 
-  const text = `[${msg.author.username}]: ${msg.content}`;
+  // Clean up the message for SMS
+  let text = msg.content;
 
   const msgParams = {
     from: TWILIO_NUMBER,
@@ -59,23 +57,19 @@ discord.on('messageCreate', async (msg) => {
     body: text,
   };
 
-  // Forward attachments as MMS
   if (msg.attachments.size > 0) {
-    msgParams.mediaUrl = msg.attachments.first().url;
+    msgParams.mediaUrl = [msg.attachments.first().url];
   }
 
   try {
     await twilioClient.messages.create(msgParams);
-    console.log(`Sent SMS to ${toNumber}: ${text}`);
+    console.log(`Forwarded bot reply via SMS to ${toNumber}: ${text.substring(0, 80)}...`);
   } catch (e) {
     console.error('Twilio send error:', e.message);
   }
 });
 
-// Track last SMS sender so we know who to reply to
-let lastSender = null;
-
-// Twilio -> Discord
+// Twilio -> Discord: post SMS via webhook so the bot sees it as a mention
 app.post('/sms', async (req, res) => {
   const from = req.body.From;
   const body = req.body.Body || '';
@@ -84,26 +78,36 @@ app.post('/sms', async (req, res) => {
   lastSender = from;
   console.log(`Inbound SMS from ${from}: ${body}`);
 
-  if (!discordChannel) {
-    console.error('Discord channel not ready');
-    res.sendStatus(200);
-    return;
-  }
-
-  let content = `📱 **${from}**: ${body}`;
+  // Build message content — @mention the bot so OpenClaw responds
+  let content = `${body}\n\n<@${DISCORD_BOT_ID}>`;
 
   // Handle MMS media
   const mediaUrls = [];
   for (let i = 0; i < numMedia; i++) {
     mediaUrls.push(req.body[`MediaUrl${i}`]);
   }
-
   if (mediaUrls.length > 0) {
     content += '\n' + mediaUrls.join('\n');
   }
 
   try {
-    await discordChannel.send(content);
+    if (DISCORD_WEBHOOK_URL) {
+      // Post via webhook — appears as a separate user, not the bot
+      await fetch(DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content,
+          username: `SMS ${from}`,
+        }),
+      });
+      console.log('Posted SMS to Discord via webhook');
+    } else {
+      // Fallback: post as the bot (OpenClaw won't respond to its own messages)
+      const channel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
+      await channel.send(content);
+      console.log('Posted SMS to Discord as bot (webhook not configured)');
+    }
   } catch (e) {
     console.error('Discord send error:', e.message);
   }
